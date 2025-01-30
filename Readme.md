@@ -1,8 +1,16 @@
-# CRUD con ChromaDB
+# 2 Etapa del proyecto 
+
+vamos a tomar la referecnia de la etapa 1 del proyecto y camos a desarrollar en un archivo .py la segunda parte
+
+para esta aprte vamos a Realiza un CRUD de documentos en streamlit que permita realizar las operaciones de CRUD sobre una base de datos vectorial utilizando streamlit para crear la interfaz grafica
+
+
+# 1 Etapa del proyecto 
+## CRUD con ChromaDB
 
 Este proyecto demuestra cómo realizar operaciones CRUD (Crear, Leer, Actualizar y Eliminar) utilizando ChromaDB con la última configuración. A continuación, se detallan los pasos y configuraciones utilizados.
 
-## 1. Métodos de consulta en el CRUD
+### 1. Métodos de consulta en el CRUD
 
 - **Crear (Create):** Se utiliza el método `add` para insertar nuevos documentos en la colección. Este método requiere listas de `documents`, `metadatas` e `ids`.
 
@@ -12,7 +20,7 @@ Este proyecto demuestra cómo realizar operaciones CRUD (Crear, Leer, Actualizar
 
 - **Eliminar (Delete):** El método `delete` permite eliminar documentos de la colección especificando sus `ids`.
 
-## 2. Configuración de la base de datos vectorial
+### 2. Configuración de la base de datos vectorial
 
 Se inicializa un cliente de ChromaDB con la configuración adecuada, especificando el directorio de persistencia:
 
@@ -22,7 +30,7 @@ client = chromadb.PersistentClient(path="/path/to/persist/directory")
 
 Esto asegura que los datos se almacenen en el directorio especificado, permitiendo la persistencia entre sesiones.
 
-## 3. Funcionamiento de los embeddings y su configuración
+### 3. Funcionamiento de los embeddings y su configuración
 
 Los embeddings son representaciones vectoriales de texto que permiten medir similitudes semánticas entre documentos. En este proyecto, se utiliza la función de embedding `SentenceTransformerEmbeddingFunction` con el modelo `all-MiniLM-L6-v2`:
 
@@ -33,7 +41,7 @@ embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(mo
 
 Al crear la colección, se asigna esta función de embedding para que ChromaDB la utilice al agregar y consultar documentos.
 
-## 4. Requisitos
+### 4. Requisitos
 
 Asegúrate de tener instaladas las dependencias necesarias, incluyendo `chromadb` y `torch`. Puedes instalarlas utilizando:
 
