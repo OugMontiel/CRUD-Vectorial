@@ -1,6 +1,7 @@
 import os
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, GenerationConfig
+import torch
 from langchain.document_loaders import (
     PyPDFLoader,
     TextLoader,
@@ -137,31 +138,63 @@ chat_container = st.container()
 # Entrada de usuario
 user_input = st.chat_input("Escribe tu pregunta...")
 
+# Y en la sección de generación de respuestas, modificar:
+def generate_response(prompt, context):
+    model_name = "deepseek-ai/deepseek-coder-1.3b-instruct"
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        load_in_4bit=True  # Usar cuantización 4-bit ... para pocos recursos
+    )
+    
+    # Formatear el prompt según requiere Deepseek
+    messages = [
+        {"role": "user", "content": f"Contexto: {context}\n\nPregunta: {prompt}"}
+    ]
+    full_prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+    
+    # Configurar parámetros de generación
+    generation_config = GenerationConfig.from_pretrained(model_name)
+    generation_config.max_new_tokens = 512
+    generation_config.temperature = 0.7
+    generation_config.top_p = 0.9
+    generation_config.do_sample = True
+    
+    inputs = tokenizer(full_prompt, return_tensors="pt").to(model.device)
+    outputs = model.generate(
+        **inputs,
+        generation_config=generation_config,
+        pad_token_id=tokenizer.eos_token_id
+    )
+    
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return response.split("assistant\n")[-1].strip()
+
 if user_input and st.session_state.vector_db:
     # Búsqueda de documentos relevantes
     docs = st.session_state.vector_db.similarity_search(user_input, k=3)
     context = "\n\n".join([doc.page_content for doc in docs])
     
     # Generación de respuesta
-    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    
-    generator = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device=0 if torch.cuda.is_available() else -1
-    )
-    
-    prompt = f"Contexto: {context}\n\nPregunta: {user_input}\nRespuesta:"
-    
-    response = generator(
-        prompt,
-        max_length=512,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9
-    )
+    try:
+        response = generate_response(user_input, context)
+        
+        # Actualización del historial del chat
+        if st.session_state.current_chat:
+            st.session_state.chats[st.session_state.current_chat].append(
+                {"user": user_input, "bot": response}
+            )
+            
+    except Exception as e:
+        st.error(f"Error generando respuesta: {str(e)}")
     
     # Actualización del historial del chat
     if st.session_state.current_chat:
