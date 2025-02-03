@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, GenerationConfig
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline, GenerationConfig
 import torch
 from langchain.document_loaders import (
     PyPDFLoader,
@@ -13,10 +13,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import Chroma
 from langchain.embeddings import HuggingFaceEmbeddings
 import pandas as pd
+import shutil
+from functools import lru_cache
+
 
 # Configuración inicial
-MODEL_NAME = "deepseek-ai/deepseek-coder-1.3b-instruct"
-EMBEDDINGS_MODEL = "sentence-transformers/all-mpnet-base-v2"
+# MODEL_NAME = "google/flan-t5-base"  # Versión balanceada
+# Alternativas:
+MODEL_NAME = "google/flan-t5-small"  # Versión más ligera
+# MODEL_NAME = "google/flan-t5-large"  # Si tienes más recursos
+EMBEDDINGS_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Más ligero
 PERSIST_DIRECTORY = "chroma_db"
 
 # Función para cargar documentos
@@ -56,12 +62,10 @@ def train_model(documents, chunk_size, chunk_overlap, preprocess):
     
     processed_docs = text_splitter.split_documents(documents)
     
-    if preprocess:
-        for doc in processed_docs:
-            doc.page_content = preprocess_text(doc.page_content)
-    
+    # Asegurar que usamos el modelo correcto de embeddings
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
     
+    # Crear nueva base de datos con dimensión consistente
     vectordb = Chroma.from_documents(
         documents=processed_docs,
         embedding=embeddings,
@@ -105,6 +109,9 @@ with st.sidebar:
     chunk_overlap = st.slider("Solapamiento de fragmentos", 0, 256, 128)
     preprocess = st.checkbox("Preprocesar texto (limpieza básica)")
     
+    # Borrar la base de datos existente:
+    shutil.rmtree(PERSIST_DIRECTORY, ignore_errors=True)  # Ejecutar esto antes de entrenar (train_model)
+
     if st.button("Entrenar Modelo") and uploaded_files:
         with st.spinner("Procesando documentos..."):
             os.makedirs("temp", exist_ok=True)
@@ -138,45 +145,38 @@ chat_container = st.container()
 # Entrada de usuario
 user_input = st.chat_input("Escribe tu pregunta...")
 
-# Y en la sección de generación de respuestas, modificar:
+# Gestión de Caché para Modelos:
+@lru_cache(maxsize=1)
+def load_embedding_model():
+    return HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
+
+@lru_cache(maxsize=1)
+def load_llm_model():
+    return AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+
+# generación de respuestas:
 def generate_response(prompt, context):
-    model_name = "deepseek-ai/deepseek-coder-1.3b-instruct"
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = load_llm_model()
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        load_in_4bit=True  # Usar cuantización 4-bit ... para pocos recursos
+    input_text = f"Contexto: {context}\nPregunta: {prompt}\nRespuesta:"
+    
+    inputs = tokenizer(
+        input_text,
+        return_tensors="pt",
+        max_length=384,  # Reducir máximo para ahorrar memoria
+        truncation=True
     )
     
-    # Formatear el prompt según requiere Deepseek
-    messages = [
-        {"role": "user", "content": f"Contexto: {context}\n\nPregunta: {prompt}"}
-    ]
-    full_prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-    
-    # Configurar parámetros de generación
-    generation_config = GenerationConfig.from_pretrained(model_name)
-    generation_config.max_new_tokens = 512
-    generation_config.temperature = 0.7
-    generation_config.top_p = 0.9
-    generation_config.do_sample = True
-    
-    inputs = tokenizer(full_prompt, return_tensors="pt").to(model.device)
     outputs = model.generate(
-        **inputs,
-        generation_config=generation_config,
-        pad_token_id=tokenizer.eos_token_id
+        inputs.input_ids,
+        max_new_tokens=150,  # Reducir longitud de respuesta
+        temperature=0.65,
+        repetition_penalty=1.25,
+        num_beams=2  # Menor consumo de memoria
     )
     
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response.split("assistant\n")[-1].strip()
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 if user_input and st.session_state.vector_db:
     # Búsqueda de documentos relevantes
