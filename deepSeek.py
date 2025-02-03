@@ -1,8 +1,10 @@
+# !pip install streamlit transformers langchain langchain_community sentence-transformers chromadb
+
 import os
 import streamlit as st
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline, GenerationConfig
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
-from langchain.document_loaders import (
+from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
     CSVLoader,
@@ -10,12 +12,15 @@ from langchain.document_loaders import (
     UnstructuredHTMLLoader,
 )
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-import pandas as pd
-import shutil
-from functools import lru_cache
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
+import shutil
+import tempfile
+
+# para inicios limitados:
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Configuración inicial
 # MODEL_NAME = "google/flan-t5-base"  # Versión balanceada
@@ -29,11 +34,14 @@ PERSIST_DIRECTORY = "chroma_db"
 def load_documents(uploaded_files):
     documents = []
     for file in uploaded_files:
-        file_path = os.path.join("temp", file.name)
-        with open(file_path, "wb") as f:
-            f.write(file.getbuffer())
-        
+        file_path = None
         try:
+            # Crear un archivo temporal
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp:
+                tmp.write(file.getbuffer())
+                file_path = tmp.name  # Guardar la ruta del archivo temporal
+
+            # Seleccionar el loader adecuado según la extensión
             if file.name.lower().endswith(".pdf"):
                 loader = PyPDFLoader(file_path)
             elif file.name.lower().endswith(".txt"):
@@ -45,12 +53,23 @@ def load_documents(uploaded_files):
             elif file.name.lower().endswith(".html") or file.name.lower().endswith(".latex"):
                 loader = UnstructuredHTMLLoader(file_path)
             else:
+                st.warning(f"Formato no soportado: {file.name}")
                 continue
-            
+
+            # Cargar y procesar el documento
             documents.extend(loader.load())
+
         except Exception as e:
             st.error(f"Error al cargar {file.name}: {str(e)}")
-    
+
+        finally:
+            # Eliminar el archivo temporal si existe
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.unlink(file_path)
+                except Exception as e:
+                    st.error(f"Error al eliminar archivo temporal: {str(e)}")
+
     return documents
 
 # Función para entrenar el modelo
@@ -113,6 +132,9 @@ with st.sidebar:
     shutil.rmtree(PERSIST_DIRECTORY, ignore_errors=True)  # Ejecutar esto antes de entrenar (train_model)
 
     if st.button("Entrenar Modelo") and uploaded_files:
+        #Borrar DB existente
+        shutil.rmtree(PERSIST_DIRECTORY, ignore_errors=True)
+
         with st.spinner("Procesando documentos..."):
             os.makedirs("temp", exist_ok=True)
             documents = load_documents(uploaded_files)
@@ -146,11 +168,11 @@ chat_container = st.container()
 user_input = st.chat_input("Escribe tu pregunta...")
 
 # Gestión de Caché para Modelos:
-@lru_cache(maxsize=1)
+@st.cache_resource
 def load_embedding_model():
     return HuggingFaceEmbeddings(model_name=EMBEDDINGS_MODEL)
 
-@lru_cache(maxsize=1)
+@st.cache_resource
 def load_llm_model():
     return AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
 
@@ -172,35 +194,35 @@ def generate_response(prompt, context):
         inputs.input_ids,
         max_new_tokens=150,  # Reducir longitud de respuesta
         temperature=0.65,
+        do_sample=True,
         repetition_penalty=1.25,
         num_beams=2  # Menor consumo de memoria
     )
     
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+# Actualización del Chat
 if user_input and st.session_state.vector_db:
-    # Búsqueda de documentos relevantes
-    docs = st.session_state.vector_db.similarity_search(user_input, k=3)
-    context = "\n\n".join([doc.page_content for doc in docs])
-    
-    # Generación de respuesta
     try:
-        response = generate_response(user_input, context)
+        # Búsqueda de documentos relevantes
+        docs = st.session_state.vector_db.similarity_search(user_input, k=3)
+        context = "\n\n".join([doc.page_content for doc in docs])
         
-        # Actualización del historial del chat
-        if st.session_state.current_chat:
-            st.session_state.chats[st.session_state.current_chat].append(
-                {"user": user_input, "bot": response}
-            )
+        # Generación de respuesta
+        try:
+            response = generate_response(user_input, context)
             
+            # Actualización del historial del chat
+            if st.session_state.current_chat:
+                st.session_state.chats[st.session_state.current_chat].append(
+                    {"user": user_input, "bot": response}
+                )
+                
+        except Exception as e:
+            st.error(f"Error generando respuesta: {str(e)}")
+    
     except Exception as e:
         st.error(f"Error generando respuesta: {str(e)}")
-    
-    # Actualización del historial del chat
-    if st.session_state.current_chat:
-        st.session_state.chats[st.session_state.current_chat].append(
-            {"user": user_input, "bot": response[0]['generated_text']}
-        )
 
 # Mostrar historial del chat
 with chat_container:
